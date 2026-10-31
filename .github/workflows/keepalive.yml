@@ -1,0 +1,29 @@
+# ══════════════════════════════════════════════════════════════════════════════
+#  Free-tier keepalive + safety-net cleanup
+#  Runs daily: (1) pings the Supabase REST endpoint so the project never hits
+#  the 7-day inactivity pause, (2) optionally runs cleanup_old_orders() via the
+#  service role key in case the in-DB pg_cron job was missed.
+# ══════════════════════════════════════════════════════════════════════════════
+name: supabase-keepalive
+
+on:
+  schedule:
+    - cron: "17 6 * * *" # daily, 06:17 UTC
+  workflow_dispatch: {}
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Heartbeat (REST ping counts as DB activity)
+        run: |
+          curl -fsS "${{ secrets.SUPABASE_URL }}/rest/v1/restaurants?select=id&limit=1" \
+            -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}" \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_ANON_KEY }}"
+
+      - name: Safety-net cleanup (optional — pg_cron in-project is primary)
+        if: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY != '' }}
+        run: |
+          curl -fsS -X POST "${{ secrets.SUPABASE_URL }}/rest/v1/rpc/cleanup_old_orders" \
+            -H "apikey: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}"
