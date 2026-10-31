@@ -3,6 +3,12 @@
 #  Runs daily: (1) pings the Supabase REST endpoint so the project never hits
 #  the 7-day inactivity pause, (2) optionally runs cleanup_old_orders() via the
 #  service role key in case the in-DB pg_cron job was missed.
+#
+#  Secrets (Settings → Secrets and variables → Actions):
+#    SUPABASE_URL                required for the ping
+#    SUPABASE_ANON_KEY           required for the ping
+#    SUPABASE_SERVICE_ROLE_KEY   optional — enables the cleanup RPC step
+#  Note: `secrets` context is not valid in `if:` — guard with runtime bash.
 # ══════════════════════════════════════════════════════════════════════════════
 name: supabase-keepalive
 
@@ -16,14 +22,28 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Heartbeat (REST ping counts as DB activity)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         run: |
-          curl -fsS "${{ secrets.SUPABASE_URL }}/rest/v1/restaurants?select=id&limit=1" \
-            -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}" \
-            -H "Authorization: Bearer ${{ secrets.SUPABASE_ANON_KEY }}"
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_ANON_KEY" ]; then
+            echo "::notice::Add SUPABASE_URL and SUPABASE_ANON_KEY repo secrets to enable the daily keepalive ping."
+            exit 0
+          fi
+          curl -fsS "$SUPABASE_URL/rest/v1/restaurants?select=id&limit=1" \
+            -H "apikey: $SUPABASE_ANON_KEY" \
+            -H "Authorization: Bearer $SUPABASE_ANON_KEY"
+          echo "✅ Supabase project pinged — inactivity pause reset."
 
       - name: Safety-net cleanup (optional — pg_cron in-project is primary)
-        if: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY != '' }}
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
-          curl -fsS -X POST "${{ secrets.SUPABASE_URL }}/rest/v1/rpc/cleanup_old_orders" \
-            -H "apikey: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
-            -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}"
+          if [ -z "$SUPABASE_SERVICE_ROLE_KEY" ]; then
+            echo "::notice::SUPABASE_SERVICE_ROLE_KEY not set — skipping optional cleanup RPC (pg_cron handles it in-project)."
+            exit 0
+          fi
+          curl -fsS -X POST "$SUPABASE_URL/rest/v1/rpc/cleanup_old_orders" \
+            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY"
