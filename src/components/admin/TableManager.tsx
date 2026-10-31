@@ -10,7 +10,6 @@ import Button from '../ui/Button';
 import { Badge, Spinner } from '../ui/misc';
 import * as api from '../../lib/api';
 import { supabase } from '../../lib/supabase';
-import { useSession } from '../../context/SessionContext';
 import { copyText, cn } from '../../lib/utils';
 
 interface TableManagerProps {
@@ -24,31 +23,36 @@ interface LoadedTable {
 }
 
 export function TableManager({ restaurantId }: TableManagerProps) {
-  const { restaurant } = useSession();
-  const slug = restaurant?.slug ?? '';
-
   const [tables, setTables] = useState<LoadedTable[]>([]);
   const [loading, setLoading] = useState(true);
   const [newNumber, setNewNumber] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [qrFor, setQrFor] = useState<LoadedTable | null>(null);
+  // Admin pages have no guest QR session — resolve the slug from the restaurant
+  // row itself (only used to build the menu URL inside QR codes).
+  const [slug, setSlug] = useState('');
 
   useEffect(() => {
-    if (!restaurantId || !slug) return;
+    if (!restaurantId) return;
     let cancelled = false;
     setLoading(true);
     void (async () => {
-      const { data, error: err } = await apiFetchTables(restaurantId);
+      const [{ data: resto, error: restoErr }, fetched] = await Promise.all([
+        supabase.from('restaurants').select('slug').eq('id', restaurantId).maybeSingle(),
+        apiFetchTables(restaurantId),
+      ]);
       if (cancelled) return;
+      const err = restoErr ?? fetched.error;
       if (err) setError(err.message);
-      setTables(data ?? []);
+      if (resto?.slug) setSlug(resto.slug);
+      setTables(fetched.data ?? []);
       setLoading(false);
     })();
     return () => {
       cancelled = true;
     };
-  }, [restaurantId, slug]);
+  }, [restaurantId]);
 
   const menuUrl = (t: LoadedTable) =>
     `${window.location.origin}/menu?r=${encodeURIComponent(slug)}&table=${encodeURIComponent(t.table_number)}`;
@@ -57,17 +61,27 @@ export function TableManager({ restaurantId }: TableManagerProps) {
     if (!newNumber.trim()) return;
     setBusy(true);
     setError(null);
-    await api.createTable(restaurantId, newNumber);
-    setNewNumber('');
-    const { data } = await apiFetchTables(restaurantId);
-    setTables(data ?? []);
-    setBusy(false);
+    try {
+      await api.createTable(restaurantId, newNumber);
+      setNewNumber('');
+      const { data: refreshed } = await apiFetchTables(restaurantId);
+      setTables(refreshed ?? []);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not create the table');
+    } finally {
+      setBusy(false);
+    }
   };
 
   const toggleStatus = async (t: LoadedTable) => {
-    await api.setTableStatus(t.id, t.status !== 'active');
-    const { data } = await apiFetchTables(restaurantId);
-    setTables(data ?? []);
+    setError(null);
+    try {
+      await api.setTableStatus(t.id, t.status !== 'active');
+      const { data: refreshed } = await apiFetchTables(restaurantId);
+      setTables(refreshed ?? []);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not update the table');
+    }
   };
 
   return (
